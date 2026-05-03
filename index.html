@@ -7,7 +7,10 @@
   
   <link rel="manifest" href="./manifest.json">
   <meta name="theme-color" content="#ffffff">
-  <meta name="description" content="Tracker fiscal FIFO USD y Divisas con importación CSV">
+  <meta name="description" content="Tracker fiscal FIFO USD y Divisas con importación CSV y Gráficos">
+
+  <!-- Carga de Chart.js para los gráficos -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
   <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -49,6 +52,7 @@
   .code-block { background: #f5f5f5; border: 1px solid #ccc; padding: 10px; font-family: monospace; font-size: 11px; overflow-x: auto; white-space: pre; }
   .yr-btn { padding: 4px 10px; font-size: 12px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; }
   .yr-btn.active { background: #333; color: #fff; }
+  .chart-container { position: relative; height: 300px; width: 100%; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -69,7 +73,10 @@
     importMsg: null,
   };
 
-  // PERSISTENCIA LOCAL (Autoguardado)
+  // Instancias de gráficos para poder destruirlas al recargar
+  window.myCharts = {};
+
+  // PERSISTENCIA LOCAL
   function loadData() {
     const saved = localStorage.getItem('fiscal_tracker_data');
     if (saved) {
@@ -87,7 +94,6 @@
   const fmt = (n,d=2) => isNaN(n)?'—':Number(n).toLocaleString('es-ES',{minimumFractionDigits:d,maximumFractionDigits:d});
   const fmtUSD = n => isNaN(n)?'—':'$'+fmt(n);
   const fmtEUR = n => isNaN(n)?'—':fmt(n)+' €';
-  const fmtPct = n => fmt(n)+'%';
   const today = () => new Date().toISOString().slice(0,10);
   const uid = () => 'id_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
   const gn = (n) => { const v=parseFloat(String(n).replace(',','.')); return isNaN(v)?0:v; };
@@ -96,14 +102,13 @@
   function calcAll() {
     let events = [];
     S.deposits.forEach(d => events.push({ ...d, _type: 'deposit' }));
-    S.operations.forEach(o => events.push({ ...o, _type: o.type })); // 'buy' o 'sell'
+    S.operations.forEach(o => events.push({ ...o, _type: o.type })); 
     S.dividends.forEach(d => events.push({ ...d, _type: 'dividend' }));
     
-    // Ordenar cronológicamente
     events.sort((a, b) => a.date.localeCompare(b.date));
 
-    let usdQueue = []; // FIFO de Dólares
-    let stockLots = {}; // FIFO de Acciones
+    let usdQueue = []; 
+    let stockLots = {}; 
     let res = { fxEvents: [], stockSells: [], stockLots, usdQueue };
 
     for (let ev of events) {
@@ -119,7 +124,6 @@
       else if (ev._type === 'buy') {
         let costUSD = gn(ev.shares) * gn(ev.priceUSD);
         
-        // 1. GASTAR DÓLARES (Genera alteración patrimonial FX)
         let toSpend = costUSD;
         let costBasisEUR = 0;
         let usedLots = [];
@@ -132,25 +136,20 @@
           lot.amountUSD -= used;
           if(lot.amountUSD < 0.00001) usdQueue.shift();
         }
-        // Si falta USD en cola (ej: margen o falta de datos), se asume tipo actual (0 ganancia)
         if (toSpend > 0.00001) costBasisEUR += toSpend / r;
         
         let valueTodayEUR = costUSD / r;
         let fxGain = valueTodayEUR - costBasisEUR;
         res.fxEvents.push({ id: ev.id, date: ev.date, spendUSD: costUSD, gainEUR: fxGain, valueTodayEUR, costBasisEUR, usedLots });
 
-        // 2. AÑADIR ACCIONES AL FIFO
         let stockCostEUR = valueTodayEUR + gn(ev.commissionEUR||0);
         if (!stockLots[ev.company]) stockLots[ev.company] = [];
         stockLots[ev.company].push({ shares: gn(ev.shares), priceUSD: gn(ev.priceUSD), rateEURUSD: r, costEUR: stockCostEUR, date: ev.date });
       } 
       else if (ev._type === 'sell') {
         let revUSD = gn(ev.shares) * gn(ev.priceUSD);
-        
-        // 1. RECIBIR DÓLARES
         usdQueue.push({ date: ev.date, amountUSD: revUSD, rateEURUSD: r });
 
-        // 2. VENDER ACCIONES (Genera ganancia de capital bursátil)
         let toSell = gn(ev.shares);
         let sq = stockLots[ev.company] || [];
         let stockCostBaseEUR = 0;
@@ -275,6 +274,78 @@
     return { ok, errs };
   }
 
+  // DIBUJAR GRÁFICOS (CHART.JS)
+  function drawCharts() {
+    if(!window.Chart) return; // Por si no ha cargado aún
+    
+    // Destruir gráficos anteriores
+    if(window.myCharts.annual) window.myCharts.annual.destroy();
+    if(window.myCharts.monthly) window.myCharts.monthly.destroy();
+
+    const { fxEvents, stockSells } = calcAll();
+    const years = YEARS();
+    
+    // Opciones generales
+    const chartOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${fmtEUR(ctx.raw)}` } } }
+    };
+
+    // 1. Datos Gráfico Anual (Todos los años)
+    const annualStock = years.map(y => stockSells.filter(e => e.date.startsWith(y)).reduce((s, e) => s + e.gainEUR, 0));
+    const annualFx = years.map(y => fxEvents.filter(e => e.date.startsWith(y)).reduce((s, e) => s + e.gainEUR, 0));
+    const annualDiv = years.map(y => S.dividends.filter(d => d.date.startsWith(y)).reduce((s, d) => s + gn(d.grossUSD)/gn(d.rateEURUSD), 0));
+
+    const ctxAnnual = document.getElementById('chartAnnual').getContext('2d');
+    window.myCharts.annual = new Chart(ctxAnnual, {
+      type: 'bar',
+      data: {
+        labels: years,
+        datasets: [
+          { label: 'Ganancia Bursátil', data: annualStock, backgroundColor: '#1976d2' },
+          { label: 'Ganancia Divisa (FX)', data: annualFx, backgroundColor: '#f57c00' },
+          { label: 'Dividendos Brutos', data: annualDiv, backgroundColor: '#2e7d32' }
+        ]
+      },
+      options: { ...chartOptions, scales: { x: { stacked: true }, y: { stacked: true } } }
+    });
+
+    // 2. Datos Gráfico Mensual (Solo el año seleccionado)
+    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+    const moStock = new Array(12).fill(0);
+    const moFx = new Array(12).fill(0);
+    const moDiv = new Array(12).fill(0);
+
+    stockSells.filter(e => e.date.startsWith(String(S.fiscalYear))).forEach(e => {
+      let m = parseInt(e.date.split('-')[1]) - 1;
+      moStock[m] += e.gainEUR;
+    });
+    fxEvents.filter(e => e.date.startsWith(String(S.fiscalYear))).forEach(e => {
+      let m = parseInt(e.date.split('-')[1]) - 1;
+      moFx[m] += e.gainEUR;
+    });
+    S.dividends.filter(e => e.date.startsWith(String(S.fiscalYear))).forEach(e => {
+      let m = parseInt(e.date.split('-')[1]) - 1;
+      moDiv[m] += gn(e.grossUSD)/gn(e.rateEURUSD);
+    });
+
+    const ctxMonthly = document.getElementById('chartMonthly').getContext('2d');
+    window.myCharts.monthly = new Chart(ctxMonthly, {
+      type: 'line',
+      data: {
+        labels: months,
+        datasets: [
+          { label: 'Ganancia Bursátil', data: moStock, borderColor: '#1976d2', tension: 0.3, fill: false },
+          { label: 'Ganancia Divisa (FX)', data: moFx, borderColor: '#f57c00', tension: 0.3, fill: false },
+          { label: 'Dividendos Brutos', data: moDiv, borderColor: '#2e7d32', tension: 0.3, fill: false }
+        ]
+      },
+      options: chartOptions
+    });
+  }
+
   // RENDER UI
   function renderRateInputs(formKey) {
     let r = gn(S[formKey].rateEURUSD);
@@ -322,7 +393,7 @@
         <div class="metric"><div class="metric-label">Dividendos Brutos</div><div class="metric-value mono pos">+${fmtEUR(divGrossEUR)}</div></div>
         <div class="metric"><div class="metric-label">IRPF Estimado</div><div class="metric-value mono ${taxFinal>0?'neg':''}">${taxFinal>0?fmtEUR(taxFinal):'—'}</div></div>
       </div>
-      <div class="alert al-info"><b>Nota Legal:</b> Cuando compras acciones en USD, la Hacienda española lo considera una "venta" de esos dólares. La diferencia entre el coste original de adquisición de esos dólares y su valor de cambio el día de la compra, tributa como ganancia/pérdida patrimonial. Esta PWA lo calcula automáticamente (Motor FX-FIFO).</div>
+      <div class="alert al-info"><b>Nota Legal:</b> Cuando compras acciones en USD, la Hacienda española lo considera una "venta" de esos dólares. La diferencia entre el coste original de adquisición de esos dólares y su valor de cambio el día de la compra, tributa como ganancia/pérdida patrimonial. Esta app lo calcula automáticamente.</div>
       `;
     }
 
@@ -387,6 +458,20 @@
       </div>`;
     }
 
+    if (tab === 'graficos') {
+      content = `
+        ${yearSelector}
+        <div class="section">
+          <div class="stitle">Evolución Anual (Histórico)</div>
+          <div class="chart-container"><canvas id="chartAnnual"></canvas></div>
+        </div>
+        <div class="section">
+          <div class="stitle">Desglose Mensual (${fiscalYear})</div>
+          <div class="chart-container"><canvas id="chartMonthly"></canvas></div>
+        </div>
+      `;
+    }
+
     if (tab === 'csv') {
       const sampleCSV = `tipo;fecha;empresa;acciones;precio_usd;tipo_cambio_eur_usd;comision_eur;dividendo_bruto_usd;retencion_pct;deposito_usd
 deposito;2024-01-10;;;;1,0850;2,50;;;1000,00
@@ -448,10 +533,15 @@ dividendo;2024-02-15;AAPL;;;1,0850;;24,00;15;`;
 
     document.getElementById('root').innerHTML = `
       <div class="tabs">
-        ${[['dashboard','Resumen'],['depositos','Ingresos'],['operaciones','Operaciones'],['dividendos','Dividendos'],['fifo','Cartera/Lotes'],['fiscal','Impuestos'],['csv','Datos']].map(([t,l])=>`<button class="tab ${tab===t?'active':''}" onclick="setTab('${t}')">${l}</button>`).join('')}
+        ${[['dashboard','Resumen'],['depositos','Ingresos'],['operaciones','Operaciones'],['dividendos','Dividendos'],['fifo','Cartera/Lotes'],['graficos', 'Gráficos'],['fiscal','Impuestos'],['csv','Datos']].map(([t,l])=>`<button class="tab ${tab===t?'active':''}" onclick="setTab('${t}')">${l}</button>`).join('')}
       </div>
       ${content}
     `;
+
+    // Si la pestaña es gráficos, hay que dibujarlos después de inyectar el HTML
+    if (tab === 'graficos') {
+      setTimeout(drawCharts, 0);
+    }
   }
 
   // ACCIONES Y EVENTOS
