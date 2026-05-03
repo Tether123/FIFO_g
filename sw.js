@@ -1,11 +1,13 @@
-const CACHE_NAME = 'fiscal-tracker-v4';
+const CACHE_NAME = 'fiscal-tracker-v5';
 
+// Ahora guardamos también la librería de gráficos para que funcione Offline
 const URLS_TO_CACHE = [
   './',
   './index.html',
   './manifest.json',
   './icon-192.png',
-  './icon-512.png'
+  './icon-512.png',
+  'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js'
 ];
 
 self.addEventListener('install', event => {
@@ -25,6 +27,7 @@ self.addEventListener('activate', event => {
   );
 });
 
+// Interceptor de red: Cache First para archivos de CDN, Network First para lo demás
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   
@@ -38,4 +41,3 @@ self.addEventListener('fetch', event => {
       .catch(() => caches.match(event.request))
   );
 });
-
