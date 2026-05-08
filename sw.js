@@ -1,5 +1,5 @@
-// He subido la versión a "v6" para forzar al navegador a borrar la caché antigua
-const CACHE_NAME = 'fiscal-tracker-v6';
+// He subido la versión a "v7"
+const CACHE_NAME = 'fiscal-tracker-v7';
 
 const URLS_TO_CACHE = [
   './',
@@ -27,7 +27,7 @@ self.addEventListener('activate', event => {
   );
 });
 
-// Interceptor de red: Cache First para archivos de CDN, Network First para lo demás
+// Interceptor de red: Network First para index.html para evitar que te quedes atascado en versiones viejas
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   
