@@ -1,6 +1,6 @@
-const CACHE_NAME = 'fiscal-tracker-v5';
+// He subido la versión a "v6" para forzar al navegador a borrar la caché antigua
+const CACHE_NAME = 'fiscal-tracker-v6';
 
-// Ahora guardamos también la librería de gráficos para que funcione Offline
 const URLS_TO_CACHE = [
   './',
   './index.html',
