@@ -96,7 +96,7 @@
   function calcAll() {
     let events = [];
     S.deposits.forEach(d => events.push({ ...d, _type: 'deposit' }));
-    S.operations.forEach(o => events.push({ ...o, _type: o.type })); // 'buy' o 'sell'
+    S.operations.forEach(o => events.push({ ...o, _type: o.type })); 
     S.dividends.forEach(d => events.push({ ...d, _type: 'dividend' }));
     
     // Ordenar cronológicamente
@@ -132,11 +132,11 @@
           lot.amountUSD -= used;
           if(lot.amountUSD < 0.00001) usdQueue.shift();
         }
-        // Si falta USD en cola (ej: margen o falta de datos), se asume tipo actual (0 ganancia)
         if (toSpend > 0.00001) costBasisEUR += toSpend / r;
         
         let valueTodayEUR = costUSD / r;
         let fxGain = valueTodayEUR - costBasisEUR;
+        // Importante: Guardamos la compañía (ev.company) para que se muestre en FX
         res.fxEvents.push({ id: ev.id, date: ev.date, company: ev.company, spendUSD: costUSD, gainEUR: fxGain, valueTodayEUR, costBasisEUR, usedLots });
 
         // 2. AÑADIR ACCIONES AL FIFO
@@ -161,7 +161,6 @@
           let frac = used / lot.shares;
           let lotCost = lot.costEUR * frac;
           stockCostBaseEUR += lotCost;
-          // Guardamos info de la compra original para trazarlo después
           usedLots.push({ shares: used, date: lot.date, costEUR: lotCost, priceUSD: lot.priceUSD, rateEURUSD: lot.rateEURUSD });
           toSell -= used;
           lot.shares -= used;
@@ -195,7 +194,7 @@
   };
   function inYear(item) { return item.date && item.date.startsWith(String(S.fiscalYear)); }
 
-  // EXPORTAR CSV (Excel España)
+  // EXPORTAR CSV
   function exportCSV() {
     const { stockSells, fxEvents } = calcAll();
     const stockMap = {}; stockSells.forEach(r => stockMap[r.id] = r);
@@ -308,7 +307,7 @@
     const taxFinal = Math.max(0, tax - taxCredit);
 
     const yearSelector = `<div style="margin-bottom:1rem">
-      <span style="font-size:11px;color:#666;">AÑO FISCAL:</span>
+      <span style="font-size:11px;color:#666;">FILTRAR AÑO FISCAL:</span>
       ${YEARS().map(y=>`<button class="yr-btn ${String(y)===String(fiscalYear)?'active':''}" onclick="setYear('${y}')">${y}</button>`).join(' ')}
     </div>`;
 
@@ -323,7 +322,7 @@
         <div class="metric"><div class="metric-label">Dividendos Brutos</div><div class="metric-value mono pos">+${fmtEUR(divGrossEUR)}</div></div>
         <div class="metric"><div class="metric-label">IRPF Estimado</div><div class="metric-value mono ${taxFinal>0?'neg':''}">${taxFinal>0?fmtEUR(taxFinal):'—'}</div></div>
       </div>
-      <div class="alert al-info"><b>Nota Legal:</b> Cuando compras acciones en USD, la Hacienda española lo considera una "venta" de esos dólares. La diferencia entre el coste original de adquisición de esos dólares y su valor de cambio el día de la compra, tributa como ganancia/pérdida patrimonial. Esta PWA lo calcula automáticamente (Motor FX-FIFO).</div>
+      <div class="alert al-info"><b>Nota Legal:</b> Cuando compras acciones en USD, la Hacienda española lo considera una "venta" de esos dólares. La diferencia entre el coste original de adquisición de esos dólares y su valor de cambio el día de la compra, tributa como ganancia patrimonial. Esta PWA lo calcula automáticamente (Motor FX-FIFO).</div>
       `;
     }
 
@@ -347,6 +346,9 @@
 
     if (tab === 'operaciones') {
       const fxMap = {}; fxEvents.forEach(e => fxMap[e.id] = e);
+      // FILTRAR COMPRAS EXCLUSIVAMENTE POR EL AÑO SELECCIONADO
+      const buysYear = S.operations.filter(o => o.type === 'buy' && inYear(o));
+
       content = `
       <div class="section"><div class="stitle">Nueva operación</div>
         <div class="fg">
@@ -360,12 +362,39 @@
         </div>
         <button class="btn primary" onclick="addOperation()">+ Añadir operación</button>
       </div>
-      <div class="section"><div class="stitle">Historial Global</div>
-        ${S.operations.length?`<div class="tw"><table><tr><th>Fecha</th><th>Tipo</th><th>Ticker</th><th>Acciones</th><th>Precio USD</th><th>Total EUR</th><th>Info FX</th><th>Acción</th></tr>
-        ${S.operations.map(op=>`<tr><td>${op.date}</td><td><span class="badge b-${op.type}">${op.type}</span></td><td><b>${op.company}</b></td><td>${Number(op.shares).toLocaleString('es-ES')}</td><td>${fmtUSD(op.priceUSD)}</td><td>${fmtEUR(gn(op.shares)*gn(op.priceUSD)/gn(op.rateEURUSD))}</td>
-        <td>${op.type==='buy' && fxMap[op.id] ? `<span class="${fxMap[op.id].gainEUR>=0?'pos':'neg'}">FX: ${fmtEUR(fxMap[op.id].gainEUR)}</span>`:''}</td>
-        <td><button class="btn danger" onclick="removeOp('${op.id}')">X</button></td></tr>`).join('')}
-        </table></div>`:'Sin datos'}
+      
+      ${yearSelector}
+
+      <div class="section"><div class="stitle">Ventas (Cierres) en ${fiscalYear} - Detalle FIFO</div>
+        ${ssYear.length ? `<div class="tw"><table><tr><th>Fecha Venta</th><th>Ticker</th><th>Venta USD / EUR</th><th>Lotes de Compra Asignados (Orígenes)</th><th>G/P EUR</th><th>Acción</th></tr>
+        ${ssYear.map(s => `<tr>
+          <td style="vertical-align:top">${s.date}</td>
+          <td style="vertical-align:top"><span class="badge b-sell">VENTA</span><br><b>${s.company}</b></td>
+          <td style="vertical-align:top">
+            ${Number(s.shares).toLocaleString('es-ES')} acc<br>
+            Neto: ${fmtEUR(s.revEUR)}
+          </td>
+          <td style="vertical-align:top; font-size:11px; line-height:1.4;">
+            ${s.usedLots.map(l => `<span style="color:#1976d2; font-weight:bold;">[Comprado: ${l.date}]</span> ${Number(l.shares).toLocaleString('es-ES')} acc a ${fmtUSD(l.priceUSD)} (Tipo: ${fmt(l.rateEURUSD, 4)}) -> Coste: ${fmtEUR(l.costEUR)}`).join('<br>')}
+          </td>
+          <td style="vertical-align:top" class="mono ${s.gainEUR>=0?'pos':'neg'}"><b>${fmtEUR(s.gainEUR)}</b></td>
+          <td style="vertical-align:top"><button class="btn danger" onclick="removeOp('${s.id}')">X</button></td>
+        </tr>`).join('')}
+        </table></div>` : '<div style="font-size:12px;color:#666">No hay ventas cerradas en este año fiscal.</div>'}
+      </div>
+
+      <div class="section"><div class="stitle">Compras Abiertas/Realizadas en ${fiscalYear}</div>
+        ${buysYear.length ? `<div class="tw"><table><tr><th>Fecha Compra</th><th>Ticker</th><th>Acciones</th><th>Precio USD</th><th>Total EUR</th><th>Info FX</th><th>Acción</th></tr>
+        ${buysYear.map(op => `<tr>
+          <td>${op.date}</td>
+          <td><span class="badge b-buy">COMPRA</span><br><b>${op.company}</b></td>
+          <td>${Number(op.shares).toLocaleString('es-ES')}</td>
+          <td>${fmtUSD(op.priceUSD)}</td>
+          <td>${fmtEUR(gn(op.shares)*gn(op.priceUSD)/gn(op.rateEURUSD))}</td>
+          <td>${fxMap[op.id] ? `<span class="${fxMap[op.id].gainEUR>=0?'pos':'neg'}">FX: ${fmtEUR(fxMap[op.id].gainEUR)}</span>`:''}</td>
+          <td><button class="btn danger" onclick="removeOp('${op.id}')">X</button></td>
+        </tr>`).join('')}
+        </table></div>` : '<div style="font-size:12px;color:#666">No hay compras registradas en este año fiscal.</div>'}
       </div>`;
     }
 
@@ -429,7 +458,8 @@ dividendo;2024-02-15;AAPL;;;1,0850;;24,00;15;`;
     }
 
     if (tab === 'fiscal') {
-      content = `${yearSelector}<div class="section"><div class="stitle">Base imponible del ahorro ${fiscalYear}</div>
+      content = `${yearSelector}
+      <div class="section"><div class="stitle">Base imponible del ahorro ${fiscalYear}</div>
       <div class="tramo"><span>G/P Acciones (FIFO Bursátil):</span> <span class="mono ${totalStockGainEUR>=0?'pos':'neg'}">${fmtEUR(totalStockGainEUR)}</span></div>
       <div class="tramo"><span>G/P Divisas (FIFO USD):</span> <span class="mono ${totalFxGainEUR>=0?'pos':'neg'}">${fmtEUR(totalFxGainEUR)}</span></div>
       <div class="tramo" style="background:#f9f9f9"><span><b>Total Ganancias Patrimoniales:</b></span> <b class="mono">${fmtEUR(totalCapGainEUR)}</b></div>
@@ -440,25 +470,10 @@ dividendo;2024-02-15;AAPL;;;1,0850;;24,00;15;`;
       <div class="tramo"><b>Cuota a Pagar:</b> <b class="mono neg">${fmtEUR(taxFinal)}</b></div>
       </div>
       
-      ${ssYear.length ? `<div class="section"><div class="stitle">Detalle Ventas Acciones (FIFO) ${fiscalYear}</div>
-      <div class="tw"><table><tr><th>Fecha Venta</th><th>Ticker</th><th>Acciones</th><th>Lotes de Compra Usados (Orígenes)</th><th>Venta EUR</th><th>Coste EUR</th><th>G/P Acciones</th></tr>
-      ${ssYear.map(s=>`<tr>
-        <td style="vertical-align:top">${s.date}</td>
-        <td style="vertical-align:top"><b>${s.company}</b></td>
-        <td style="vertical-align:top">${Number(s.shares).toLocaleString('es-ES')}</td>
-        <td style="vertical-align:top; font-size:11px; line-height:1.4;">
-          ${s.usedLots.map(l => `<span style="color:#1976d2; font-weight:bold;">[Compra: ${l.date}]</span> ${Number(l.shares).toLocaleString('es-ES')} acc a ${fmtUSD(l.priceUSD)} (Tipo: ${fmt(l.rateEURUSD, 4)})`).join('<br>')}
-        </td>
-        <td style="vertical-align:top">${fmtEUR(s.revEUR)}</td>
-        <td style="vertical-align:top">${fmtEUR(s.costBaseEUR)}</td>
-        <td style="vertical-align:top" class="mono ${s.gainEUR>=0?'pos':'neg'}">${fmtEUR(s.gainEUR)}</td>
-      </tr>`).join('')}
-      </table></div></div>` : ''}
-
       ${fxYear.length ? `<div class="section"><div class="stitle">Detalle Divisas (FX) ${fiscalYear}</div>
       <div class="tw"><table><tr><th>Fecha (Compra Stock)</th><th>Ticker</th><th>USD Gastados</th><th>Coste Original EUR</th><th>Valor Compra EUR</th><th>G/P Divisa</th></tr>
-      ${fxYear.map(f=>`<tr><td>${f.date}</td><td><b>${f.company}</b></td><td>${fmtUSD(f.spendUSD)}</td><td>${fmtEUR(f.costBasisEUR)}</td><td>${fmtEUR(f.valueTodayEUR)}</td><td class="mono ${f.gainEUR>=0?'pos':'neg'}">${fmtEUR(f.gainEUR)}</td></tr>`).join('')}
-      </table></div></div>` : ''}
+      ${fxYear.map(f=>`<tr><td>${f.date}</td><td><b>${f.company}</b></td><td>${fmtUSD(f.spendUSD)}</td><td>${fmtEUR(f.costBasisEUR)}</td><td>${fmtEUR(f.valueTodayEUR)}</td><td class="mono ${f.gainEUR>=0?'pos':'neg'}"><b>${fmtEUR(f.gainEUR)}</b></td></tr>`).join('')}
+      </table></div></div>` : '<div class="alert al-info" style="margin-top:10px">No hay operaciones de divisa en este año fiscal.</div>'}
       `;
     }
 
